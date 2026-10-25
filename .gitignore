@@ -1,0 +1,27 @@
+# Build output
+**/bin/
+**/obj/
+**/publish/
+**/artifacts/
+**/dist/
+.vs/
+.idea/
+
+# Local IDE and user files
+*.user
+*.suo
+*.DotSettings.user
+
+# Runtime data
+ScrcpyControlData/
+**/ScrcpyControlData/
+settings.json
+
+# Local packages and release artifacts
+*.exe
+*.zip
+*.pdb
+
+# Local-only documentation copied from the author's machine
+/ScrcpyControl-README.txt
+/源代码使用说明.txt

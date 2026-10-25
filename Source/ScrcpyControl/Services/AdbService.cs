@@ -1,0 +1,508 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
+using ScrcpyControl.Models;
+
+namespace ScrcpyControl.Services;
+
+public sealed class AdbService
+{
+    private readonly PathService _paths;
+
+    public AdbService(PathService paths)
+    {
+        _paths = paths;
+    }
+
+    public async Task<IReadOnlyList<DeviceInfo>> GetDevicesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var result = await ProcessRunner.RunAsync(
+            _paths.AdbExe,
+            ["devices", "-l"],
+            _paths.BaseDirectory,
+            cancellationToken).ConfigureAwait(false);
+
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(result.CombinedOutput)
+                    ? "ADB 无法读取设备列表"
+                    : result.CombinedOutput.Trim());
+        }
+
+        var devices = new List<DeviceInfo>();
+        foreach (var rawLine in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim();
+            if (line.StartsWith("List of devices", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith('*'))
+            {
+                continue;
+            }
+
+            var firstSpace = line.IndexOf(' ');
+            if (firstSpace <= 0)
+            {
+                continue;
+            }
+
+            var serial = line[..firstSpace];
+            var remainder = line[(firstSpace + 1)..].Trim();
+            var stateEnd = remainder.IndexOf(' ');
+            var state = stateEnd < 0 ? remainder : remainder[..stateEnd];
+            var properties = stateEnd < 0 ? string.Empty : remainder[(stateEnd + 1)..];
+            var values = ParseKeyValues(properties);
+
+            devices.Add(new DeviceInfo
+            {
+                Serial = serial,
+                State = state,
+                Model = values.GetValueOrDefault("model", string.Empty),
+                Product = values.GetValueOrDefault("product", string.Empty),
+                Device = values.GetValueOrDefault("device", string.Empty),
+                TransportId = values.GetValueOrDefault("transport_id", string.Empty)
+            });
+        }
+
+        return devices;
+    }
+
+    public async Task<string> RunShellAsync(
+        string serial,
+        string command,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await ProcessRunner.RunAsync(
+            _paths.AdbExe,
+            ["-s", serial, "shell", command],
+            _paths.BaseDirectory,
+            cancellationToken).ConfigureAwait(false);
+
+        var output = result.StandardOutput.TrimEnd('\r', '\n');
+        if (result.ExitCode != 0)
+        {
+            var error = result.StandardError.Trim();
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(error)
+                    ? $"ADB 命令失败：{command}"
+                    : error);
+        }
+
+        return output;
+    }
+
+    public async Task<string> GetPropertyAsync(
+        string serial,
+        string property,
+        CancellationToken cancellationToken = default)
+    {
+        return (await RunShellAsync(serial, $"getprop {QuotePosix(property)}", cancellationToken)
+            .ConfigureAwait(false)).Trim();
+    }
+
+    public async Task<(int Brightness, int Mode)> GetBrightnessAsync(
+        string serial,
+        CancellationToken cancellationToken = default)
+    {
+        var brightnessText = await RunShellAsync(
+            serial,
+            "settings get system screen_brightness",
+            cancellationToken).ConfigureAwait(false);
+        var modeText = await RunShellAsync(
+            serial,
+            "settings get system screen_brightness_mode",
+            cancellationToken).ConfigureAwait(false);
+
+        if (!int.TryParse(brightnessText.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var brightness) ||
+            !int.TryParse(modeText.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var mode))
+        {
+            throw new InvalidOperationException("无法读取手机亮度设置");
+        }
+
+        return (brightness, mode);
+    }
+
+    public async Task SetBrightnessAsync(
+        string serial,
+        int brightness,
+        int mode,
+        CancellationToken cancellationToken = default)
+    {
+        brightness = Math.Clamp(brightness, 1, 255);
+        await RunShellAsync(
+            serial,
+            $"settings put system screen_brightness {brightness}",
+            cancellationToken).ConfigureAwait(false);
+        await RunShellAsync(
+            serial,
+            $"settings put system screen_brightness_mode {Math.Clamp(mode, 0, 1)}",
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<bool> IsTextInputFocusedAsync(
+        string serial,
+        CancellationToken cancellationToken = default)
+    {
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            var dump = await RunShellAsync(
+                serial,
+                "dumpsys input_method",
+                cancellationToken).ConfigureAwait(false);
+
+            if (ContainsActiveTextInput(dump))
+            {
+                return true;
+            }
+
+            if (attempt < 3)
+            {
+                await Task.Delay(120, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        return false;
+    }
+
+    public static bool ContainsActiveTextInput(string dump)
+    {
+        if (string.IsNullOrWhiteSpace(dump))
+        {
+            return false;
+        }
+
+        // Android versions and OEM builds use either ":" or "=" after these
+        // fields. A non-null editor is the reliable signal that a text field
+        // owns the active input connection.
+        return HasActiveDumpValue(dump, "mCurrentEditorInfo");
+    }
+
+    private static bool HasActiveDumpValue(string dump, string fieldName)
+    {
+        var lines = dump.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n');
+
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var trimmed = lines[index].TrimStart();
+            if (!trimmed.StartsWith(fieldName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var markerIndex = fieldName.Length;
+            if (markerIndex >= trimmed.Length ||
+                (trimmed[markerIndex] != ':' && trimmed[markerIndex] != '='))
+            {
+                continue;
+            }
+
+            var inlineValue = trimmed[(markerIndex + 1)..].Trim();
+            if (inlineValue.Length > 0 &&
+                !inlineValue.Equals("null", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (trimmed[markerIndex] != ':' || inlineValue.Length > 0)
+            {
+                continue;
+            }
+
+            // On Android 17 the field name is followed by an indented object:
+            // inputType=..., packageName=..., and so on.
+            for (var childIndex = index + 1; childIndex < lines.Length; childIndex++)
+            {
+                var child = lines[childIndex].Trim();
+                if (child.Length == 0)
+                {
+                    continue;
+                }
+
+                if (child.StartsWith("inputType=", StringComparison.Ordinal) ||
+                    child.StartsWith("packageName=", StringComparison.Ordinal) ||
+                    child.StartsWith("actionLabel=", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                break;
+            }
+        }
+
+        return false;
+    }
+
+    public async Task<IReadOnlyList<RemoteEntry>> ListDirectoryAsync(
+        string serial,
+        string remotePath,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = NormalizeDirectory(remotePath);
+        var command = $"ls -la --color=never -- {QuotePosix(normalized)}";
+        var output = await RunShellAsync(serial, command, cancellationToken).ConfigureAwait(false);
+        var entries = new List<RemoteEntry>();
+
+        foreach (var rawLine in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.TrimEnd('\r');
+            if (line.StartsWith("total ", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var match = Regex.Match(
+                line,
+                @"^(?<type>[dl-])(?<perm>[rwxstST-]{9})\s+\S+\s+(?<owner>\S+)\s+(?<group>\S+)\s+(?<size>\d+)\s+(?<date>\d{4}-\d{2}-\d{2})\s+(?<time>\d{2}:\d{2})\s+(?<name>.+)$");
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var name = match.Groups["name"].Value;
+            if (name is "." or "..")
+            {
+                continue;
+            }
+
+            var isSymlink = match.Groups["type"].Value == "l";
+            var linkIndex = isSymlink ? name.IndexOf(" -> ", StringComparison.Ordinal) : -1;
+            if (linkIndex >= 0)
+            {
+                name = name[..linkIndex];
+            }
+
+            if (long.TryParse(
+                    match.Groups["size"].Value,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var size) is false)
+            {
+                size = 0;
+            }
+
+            entries.Add(new RemoteEntry
+            {
+                Name = name,
+                FullPath = CombineRemote(normalized, name),
+                IsDirectory = match.Groups["type"].Value == "d",
+                IsSymlink = isSymlink,
+                Permissions = match.Groups["type"].Value + match.Groups["perm"].Value,
+                Owner = match.Groups["owner"].Value,
+                Group = match.Groups["group"].Value,
+                Size = size,
+                Modified = $"{match.Groups["date"].Value} {match.Groups["time"].Value}"
+            });
+        }
+
+        return entries
+            .OrderByDescending(entry => entry.IsDirectory)
+            .ThenBy(entry => entry.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+    }
+
+    public async Task PushAsync(
+        string serial,
+        string localPath,
+        string remoteDirectory,
+        Action<double> progress,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = NormalizeDirectory(remoteDirectory);
+        var finalPath = CombineRemote(normalized, Path.GetFileName(localPath));
+        var temporaryRemotePath = CombineRemote(
+            normalized,
+            $".scrcpy-upload-{Guid.NewGuid():N}.tmp");
+
+        try
+        {
+            await RunTransferAsync(
+                ["-s", serial, "push", localPath, temporaryRemotePath],
+                value => progress(Math.Min(value * 0.95, 95)),
+                cancellationToken).ConfigureAwait(false);
+
+            await RunShellAsync(
+                serial,
+                $"mv -f {QuotePosix(temporaryRemotePath)} {QuotePosix(finalPath)}",
+                cancellationToken).ConfigureAwait(false);
+            progress(100);
+        }
+        catch
+        {
+            try
+            {
+                await RunShellAsync(
+                    serial,
+                    $"rm -f {QuotePosix(temporaryRemotePath)}",
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // The temporary file may not exist if the upload never started.
+            }
+            throw;
+        }
+    }
+
+    public async Task PullAsync(
+        string serial,
+        string remotePath,
+        string localDirectory,
+        Action<double> progress,
+        CancellationToken cancellationToken = default)
+    {
+        Directory.CreateDirectory(localDirectory);
+        if (remotePath.EndsWith('/'))
+        {
+            throw new InvalidOperationException("请进入文件夹后选择具体文件下载。");
+        }
+
+        var fileName = Path.GetFileName(remotePath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "download.bin";
+        }
+
+        var finalPath = Path.Combine(localDirectory, fileName);
+        var temporaryPath = Path.Combine(
+            localDirectory,
+            $".scrcpy-download-{Guid.NewGuid():N}.tmp");
+        var requiresAsciiSource = remotePath.Any(character => character > 127);
+        var remoteTemporaryDirectory = "/sdcard/.scrcpy_control_tmp/";
+        var remoteTemporaryPath = CombineRemote(
+            remoteTemporaryDirectory,
+            $".scrcpy-pull-{Guid.NewGuid():N}.tmp");
+        var pullSource = remotePath;
+
+        try
+        {
+            if (requiresAsciiSource)
+            {
+                await RunShellAsync(
+                    serial,
+                    $"mkdir -p {QuotePosix(remoteTemporaryDirectory)}",
+                    cancellationToken).ConfigureAwait(false);
+                await RunShellAsync(
+                    serial,
+                    $"cp -f {QuotePosix(remotePath)} {QuotePosix(remoteTemporaryPath)}",
+                    cancellationToken).ConfigureAwait(false);
+                pullSource = remoteTemporaryPath;
+            }
+
+            await RunTransferAsync(
+                ["-s", serial, "pull", pullSource, temporaryPath],
+                value => progress(Math.Min(value * 0.98, 98)),
+                cancellationToken).ConfigureAwait(false);
+
+            File.Move(temporaryPath, finalPath, overwrite: true);
+            progress(100);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(temporaryPath);
+            }
+            catch
+            {
+                // Ignore temporary file cleanup failures.
+            }
+
+            if (requiresAsciiSource)
+            {
+                try
+                {
+                    await RunShellAsync(
+                        serial,
+                        $"rm -f {QuotePosix(remoteTemporaryPath)}",
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // The remote temporary copy may not exist if copying failed.
+                }
+            }
+        }
+    }
+
+    public static string NormalizeDirectory(string path)
+    {
+        var normalized = string.IsNullOrWhiteSpace(path) ? "/sdcard/" : path.Trim();
+        if (!normalized.StartsWith('/'))
+        {
+            normalized = "/" + normalized;
+        }
+
+        return normalized.EndsWith('/') ? normalized : normalized + "/";
+    }
+
+    public static string ParentDirectory(string path)
+    {
+        var normalized = NormalizeDirectory(path).TrimEnd('/');
+        var index = normalized.LastIndexOf('/');
+        return index <= 0 ? "/" : normalized[..index] + "/";
+    }
+
+    public static string CombineRemote(string directory, string name) =>
+        NormalizeDirectory(directory) + name;
+
+    public static string QuotePosix(string value) =>
+        "'" + value.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "'";
+
+    private async Task RunTransferAsync(
+        IReadOnlyList<string> arguments,
+        Action<double> progress,
+        CancellationToken cancellationToken)
+    {
+        var result = await ProcessRunner.RunStreamingAsync(
+            _paths.AdbExe,
+            arguments,
+            _paths.BaseDirectory,
+            chunk => UpdateProgress(chunk, progress),
+            chunk => UpdateProgress(chunk, progress),
+            cancellationToken).ConfigureAwait(false);
+
+        if (result.ExitCode != 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(result.CombinedOutput)
+                    ? "文件传输失败"
+                    : result.CombinedOutput.Trim());
+        }
+
+        progress(100);
+    }
+
+    private static void UpdateProgress(string chunk, Action<double> progress)
+    {
+        foreach (Match match in Regex.Matches(chunk, @"(?<percent>\d{1,3})%"))
+        {
+            if (double.TryParse(
+                    match.Groups["percent"].Value,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var percent))
+            {
+                progress(Math.Clamp(percent, 0, 100));
+            }
+        }
+    }
+
+    private static Dictionary<string, string> ParseKeyValues(string text)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var token in text.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = token.IndexOf(':');
+            if (separator <= 0 || separator == token.Length - 1)
+            {
+                continue;
+            }
+
+            values[token[..separator]] = token[(separator + 1)..];
+        }
+
+        return values;
+    }
+}
