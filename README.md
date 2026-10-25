@@ -6,6 +6,11 @@
 
 > 本项目不是 scrcpy 官方项目。镜像与设备控制能力来自 [Genymobile/scrcpy](https://github.com/Genymobile/scrcpy)。
 
+> [!WARNING]
+> scrcpy 运行文件只应从 [Genymobile/scrcpy 官方 Releases](https://github.com/Genymobile/scrcpy/releases) 下载。不要从名称包含 `scrcpy` 的第三方网站、论坛或网盘下载来路不明的运行包。
+>
+> 本项目的便携包只应从 [ScrcpyControlGUI Releases](https://github.com/LiuJGzH/ScrcpyControlGUI/releases) 下载，并使用页面提供的 SHA256 校验值确认文件完整性。
+
 ## 项目背景
 
 scrcpy 具有低延迟、高质量和跨平台等优点，但大量功能需要通过命令行参数配置。对于需要频繁切换参数、传输文件、输入中文或执行手机按键操作的用户，完全依赖终端并不方便。
@@ -16,6 +21,14 @@ ScrcpyControlGUI 的目标是在不修改 scrcpy 核心协议的前提下，提�
 - 将常用操作放到清晰的图形界面中。
 - 提供 scrcpy 命令行没有直接覆盖的工作流，例如中文候选词输入、手机截图到 Windows 剪贴板和文件管理。
 - 继续允许用户使用完整的 scrcpy 参数。
+
+本项目保留 scrcpy 的核心优势：
+
+- 不需要 root。
+- 不需要在手机安装应用。
+- 不需要账户。
+- 不需要互联网连接。
+- 不会在 Android 设备上留下常驻组件。
 
 ## 实现原理
 
@@ -125,12 +138,22 @@ ScrcpyControlGUI 的目标是在不修改 scrcpy 核心协议的前提下，提�
 ## 系统要求
 
 - Windows 10 / Windows 11 x64
-- Android 5.0 或更高版本
 - scrcpy 5.0.1 Windows x64 运行环境
 - USB 数据线
 - 手机已开启开发者选项和 USB 调试
+- 视频镜像和键鼠控制：Android 5.0（API 21）及以上
+- 音频转发：Android 11（API 30）及以上
 
 本项目的单文件版本自带 .NET 8 运行时，目标电脑不需要额外安装 .NET。
+
+> [!IMPORTANT]
+> 部分小米、Redmi 和 HyperOS 设备只开启普通“USB 调试”时，scrcpy 可能提示：
+>
+> ```text
+> Injecting input events requires the caller (or the source of the instrumentation, if any) to have the INJECT_EVENTS permission.
+> ```
+>
+> 此时需要在开发者选项中开启单独的“USB 调试（安全设置）”，然后重启手机。该选项与普通“USB 调试”不是同一个开关。部分系统可能要求登录小米账户并连接互联网后才能开启。
 
 ## 使用方法
 
@@ -152,6 +175,8 @@ Release 中也提供单独的 `ScrcpyControl.exe`。该 EXE 仍需与 **scrcpy 5
 下载 scrcpy：
 
 <https://github.com/Genymobile/scrcpy/releases/tag/v5.0.1>
+
+本项目当前固定适配 scrcpy 5.0.1，不建议使用 WinGet、Chocolatey 或 Scoop 自动安装最新版本，除非已经确认新版本与当前控制台兼容。
 
 目录至少应包含：
 
@@ -177,6 +202,101 @@ libusb-1.0.dll
 3. 返回“设置 → 系统 / 更多设置 → 开发者选项”。
 4. 开启“USB 调试”。
 5. 连接 USB 后允许电脑的调试授权。
+6. 小米、Redmi 或 HyperOS 设备如果无法控制键鼠，继续开启“USB 调试（安全设置）”并重启手机。
+
+官方参考：
+
+- [scrcpy 官方 README](https://github.com/Genymobile/scrcpy)
+- [scrcpy Windows 安装与运行说明](https://github.com/Genymobile/scrcpy/blob/master/doc/windows.md)
+- [Android 开发者选项与 USB 调试](https://developer.android.com/studio/debug/dev-options#enable)
+
+### scrcpy 原生快捷操作
+
+控制台不会禁用 scrcpy 原生快捷键。常用操作包括：
+
+- 鼠标右键：返回
+- 鼠标中键：主屏幕
+- `Alt+F`：切换全屏
+- `Alt+O`：熄灭手机屏幕并保持投屏
+- `Alt+Shift+O`：点亮手机屏幕
+
+实际快捷键可能受 `--shortcut-mod` 参数影响。完整列表请查看 [scrcpy 快捷键文档](https://github.com/Genymobile/scrcpy/blob/master/doc/shortcuts.md)。
+
+## 下载校验
+
+官方 scrcpy Windows x64 5.0.1 包：
+
+```text
+scrcpy-win64-v5.0.1.zip
+SHA256: b12a2c4ee8be317422451fc7dcf8ee20a71b5ea7ef9ad73ddd825a25316227a5
+```
+
+本项目 `v0.0.1` 发布资产：
+
+```text
+ScrcpyControl.exe
+SHA256: 04A4850FDB58CE17511F0DC65C8D52C7AB806528EBA4DB6A552B958C3464230C
+
+ScrcpyControl-0.0.1-win64.zip
+SHA256: F544B2B38B04F7685E3651498F4F1443852954BB9BA391C3074C4C19586A3442
+```
+
+PowerShell 校验命令：
+
+```powershell
+Get-FileHash .\ScrcpyControl.exe -Algorithm SHA256
+Get-FileHash .\ScrcpyControl-0.0.1-win64.zip -Algorithm SHA256
+```
+
+## 故障排查
+
+### 控制台没有检测到设备
+
+1. 解锁手机，确认 USB 调试授权弹窗已经允许。
+2. 在 scrcpy 目录双击 `open_a_terminal_here.bat`。
+3. 执行：
+
+   ```powershell
+   .\adb.exe devices
+   ```
+
+4. 输出为 `unauthorized`：重新关闭并开启 USB 调试，再允许电脑授权。
+5. 输出为 `offline`：重新插拔数据线，或执行 `adb reconnect`。
+6. 设备列表为空：更换支持数据传输的 USB 线和 USB 端口。
+7. Windows 设备管理器出现未知 Android 设备时，安装手机厂商 USB 驱动或 Google USB Driver。
+
+### scrcpy 能启动但没有画面
+
+1. 在 scrcpy 目录运行 `open_a_terminal_here.bat`。
+2. 直接执行：
+
+   ```powershell
+   .\scrcpy.exe
+   ```
+
+3. 如果独立运行 scrcpy 也失败，先按照 scrcpy 官方文档排查，而不是继续修改控制台参数。
+4. 检查杀毒软件是否隔离了 `scrcpy-server`、`adb.exe` 或依赖 DLL。
+5. 确认没有把 ZIP 中的文件直接当作目录运行。
+
+### 能投屏但不能点击或输入
+
+- 检查是否启用了 `--no-control`。
+- 检查是否启用了 OTG 或其他会改变控制模式的参数。
+- 小米、Redmi 和 HyperOS 设备检查“USB 调试（安全设置）”，开启后重启。
+- 回到参数设置页面恢复默认参数，再尝试启动。
+
+### 中文输入宿主没有出现
+
+- 确认点击的是 Android 可编辑文本框。
+- 使用 `Ctrl+Alt+F12` 在鼠标位置强制打开输入宿主。
+- 查看运行日志是否出现“检测到手机输入框”。
+- 检查 Windows 输入法是否处于正常候选词状态。
+
+### 截图或文件管理失败
+
+- 确认手机仍处于已授权状态。
+- 确认目标目录存在且当前用户有访问权限。
+- 文件管理不会尝试 root，因此无法访问受系统权限保护的目录。
 
 ## 从源码构建
 
