@@ -2,7 +2,9 @@
 
 面向 Windows 的 scrcpy 图形控制台。它把命令行参数、设备管理、文件传输、中文输入、手机按键、截图和运行日志集中到一个桌面界面中，同时保留 scrcpy 的独立投屏窗口。
 
-当前版本：`0.0.1`
+当前版本：`0.0.2`
+
+> 版本变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 > 本项目不是 scrcpy 官方项目。镜像与设备控制能力来自 [Genymobile/scrcpy](https://github.com/Genymobile/scrcpy)。
 
@@ -39,9 +41,11 @@ ScrcpyControlGUI 的目标是在不修改 scrcpy 核心协议的前提下，提�
 3. 启动独立的 `scrcpy.exe` 子进程，隐藏控制台窗口并重定向日志。
 4. 使用 Win32 低级键鼠钩子判断用户是否正在操作 scrcpy 窗口。
 5. 通过无边框、透明、无任务栏图标的 WPF 输入宿主接收 Windows 输入法文本。
-6. 使用 Windows 剪贴板和 scrcpy 粘贴快捷键将中文发送到手机。
-7. 使用 ADB Shell 和文件传输命令执行手机按键、截图和文件管理。
-8. 使用 Android `screencap`、MediaStore 媒体扫描和 Windows 图像剪贴板实现两种截图模式。
+6. 使用 Windows 剪贴板配合 scrcpy 的 `MOD+V` 把中文发送到手机；对不响应 `KEYCODE_PASTE` 的应用，追加一次透传 `Ctrl+V`，由应用自行粘贴。
+7. 在低级鼠标钩子中对右键做长短按分流：短按发送返回，长按发送最近任务，全程不在钩子回调内注入任何系统输入事件。
+8. 使用 ADB Shell 和文件传输命令执行手机按键、语音助手唤起、截图和文件管理。
+9. 使用 Android `screencap`、MediaStore 媒体扫描和 Windows 图像剪贴板实现两种截图模式。
+10. 通过 `screen_brightness` 与 `screen_brightness_mode` 实现空闲降亮；写入时先模式后亮度，确保自动亮度设备能精确恢复原值。
 
 ## 功能
 
@@ -71,11 +75,22 @@ ScrcpyControlGUI 的目标是在不修改 scrcpy 核心协议的前提下，提�
 - 主屏幕
 - 最近任务
 - 菜单
+- 语音助手
 - 音量加减
 - 电源键
 - 熄灭 / 点亮屏幕
 - 系统截屏
 - 截图到电脑剪贴板
+
+「语音助手」通过 `android.intent.action.VOICE_COMMAND` 唤起系统默认助手。部分系统（如小米）把助手注册在 `VOICE_COMMAND` 而不是 `ASSIST` 上，通用键码 `KEYCODE_VOICE_ASSIST` 在这类设备上不会生效，因此本项目优先使用该 Intent，失败时才回退到键码。
+
+### 鼠标右键
+
+- 短按右键：返回。
+- 长按右键（默认 450 毫秒）：切换为最近任务。
+- 长按判定时长可在设置页调整（200–2000 毫秒），也可整体关闭，关闭后右键完全交由 scrcpy 处理。
+
+该功能在低级鼠标钩子层实现，只在指针位于投屏窗口内时生效；判定期间如果指针移动超过 4 像素会被视为拖拽并放弃长按。键盘与鼠标钩子回调内不注入任何输入，避免阻塞系统输入队列。
 
 系统截屏保存在手机：
 
@@ -92,12 +107,15 @@ ScrcpyControlGUI 的目标是在不修改 scrcpy 核心协议的前提下，提�
 - 支持 Windows 中文输入法和候选词。
 - 输入法组合期间不会提交拼音或未选择的候选词。
 - 自动发送默认开启，默认防抖时间为 100 ms，可在设置中调整。
-- 支持按 Enter 立即发送。
+- 宿主内有文字时按 Enter 立即发送；宿主为空时按 Enter 会向手机发送回车键，由应用自身决定是发送、搜索还是换行。
 - 发送后保留输入宿主，可连续输入多段文字。
+- 发送过程不抢占 Windows 前台焦点，输入密集时不会丢字，也不会把未上屏的拼音发到手机。
 - 新输入不会被发送到 scrcpy 窗口，避免文字顺序错乱。
 - 支持 Backspace、Delete、Ctrl+A、Ctrl+C、Ctrl+X、Ctrl+V、Ctrl+Z、Ctrl+Y。
-- 本地输入宿主为空时，常用编辑快捷键会转发给手机。
+- 本地输入宿主为空时，常用编辑快捷键、方向键与回车会转发给手机；方向键用于移动手机输入框中的光标。
 - 最新发送的文字保留在 Windows 剪贴板中。
+
+部分应用（如闲鱼）不响应 scrcpy 注入的 `KEYCODE_PASTE`，表现为「手机剪贴板已收到文字，但输入框里没有内容」。这类应用可以在设置页的「App 级粘贴包名」中登记，登记后会改用「先由 `MOD+V` 同步剪贴板，再发送透传 `Ctrl+V`」的双步粘贴。运行日志会输出当前输入框所属的包名，可直接照抄填写。
 
 ### 文件管理
 
@@ -134,6 +152,8 @@ ScrcpyControlGUI 的目标是在不修改 scrcpy 核心协议的前提下，提�
 - 设备自动刷新只在设备列表或状态变化时更新界面，避免定时闪烁。
 - 输入发送使用串行队列，避免连续文本粘贴顺序错乱。
 - 配置目录不可写时自动回退到 `%LOCALAPPDATA%\ScrcpyControl`。
+- 右键长短按在低级鼠标钩子中判定，回调内不注入任何输入事件，避免阻塞系统输入队列。
+- 亮度恢复先写 `screen_brightness_mode` 再写 `screen_brightness`，避免自动亮度设备丢弃恢复值。
 
 ## 系统要求
 
@@ -159,7 +179,7 @@ ScrcpyControlGUI 的目标是在不修改 scrcpy 核心协议的前提下，提�
 
 ### 方式一：使用 Release 便携包
 
-1. 从 [Releases](https://github.com/LiuJGzH/ScrcpyControlGUI/releases/tag/v0.0.1) 下载 Windows x64 便携包。
+1. 从 [Releases](https://github.com/LiuJGzH/ScrcpyControlGUI/releases/tag/v0.0.2) 下载 Windows x64 便携包。
 2. 解压完整目录，不要只在压缩包内运行。
 3. 在手机中开启 USB 调试。
 4. 使用 USB 数据线连接手机和电脑。
@@ -231,21 +251,21 @@ scrcpy-win64-v5.0.1.zip
 SHA256: b12a2c4ee8be317422451fc7dcf8ee20a71b5ea7ef9ad73ddd825a25316227a5
 ```
 
-本项目 `v0.0.1` 发布资产：
+本项目 `v0.0.2` 发布资产：
 
 ```text
 ScrcpyControl.exe
-SHA256: 04A4850FDB58CE17511F0DC65C8D52C7AB806528EBA4DB6A552B958C3464230C
+SHA256: B2840493A394A46DBE218B70C8BCB0FAA91AE2DF35DA516814346B5812FD60D6
 
-ScrcpyControl-0.0.1-win64.zip
-SHA256: F544B2B38B04F7685E3651498F4F1443852954BB9BA391C3074C4C19586A3442
+ScrcpyControl-0.0.2-win64.zip
+SHA256: 28BF4E2A2BD2CCDD942959482F2F3FA1373803A058C7B59872EBFC9973458C43
 ```
 
 PowerShell 校验命令：
 
 ```powershell
 Get-FileHash .\ScrcpyControl.exe -Algorithm SHA256
-Get-FileHash .\ScrcpyControl-0.0.1-win64.zip -Algorithm SHA256
+Get-FileHash .\ScrcpyControl-0.0.2-win64.zip -Algorithm SHA256
 ```
 
 ## 故障排查
@@ -337,6 +357,7 @@ dotnet run --project .\Source\ScrcpyControl.Tests\ScrcpyControl.Tests.csproj -c 
 ```text
 ScrcpyControlGUI/
 ├─ README.md
+├─ CHANGELOG.md
 ├─ LICENSE
 ├─ .gitignore
 ├─ .gitattributes
@@ -357,10 +378,10 @@ ScrcpyControlGUI/
 
 ## Release 资产
 
-`v0.0.1` 提供：
+`v0.0.2` 提供：
 
 - `ScrcpyControl.exe`：自包含控制台可执行文件。
-- `ScrcpyControl-0.0.1-win64.zip`：包含 scrcpy 5.0.1 运行环境和控制台的便携包。
+- `ScrcpyControl-0.0.2-win64.zip`：包含 scrcpy 5.0.1 运行环境和控制台的便携包。
 
 便携包中的 scrcpy 二进制遵循其原始 Apache-2.0 许可证。scrcpy 许可证会随便携包一起分发。
 
@@ -373,6 +394,9 @@ ScrcpyControlGUI/
 - 不提供 APK 安装、文件删除和文件重命名。
 - 文件访问受 Android 权限和目录权限限制。
 - 智能亮度只统计通过 scrcpy 发生的键鼠操作，不统计直接触摸手机物理屏幕。
+- 使用 `--turn-screen-off` 熄屏投屏时，scrcpy 是直接设置 display power mode 关闭面板，此时系统电源键无法点亮屏幕，需用控制台的「点亮屏幕」按钮恢复。这是 scrcpy 的固有行为，非本程序可控。
+- 「语音助手」调用的是系统默认助手；设备未设置默认助手时，该按钮可能没有响应。
+- 「长按右键切换最近任务」依赖鼠标钩子，仅在指针位于投屏窗口内时生效，且需要关闭系统的指针精度增强以外的其他鼠标拦截软件。
 - 首次运行未签名 EXE 时，Windows SmartScreen 可能显示“未知发布者”。
 
 ## 安全说明

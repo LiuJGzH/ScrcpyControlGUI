@@ -147,6 +147,10 @@ public sealed class SettingsService
     {
         settings.IdleSeconds = Math.Clamp(settings.IdleSeconds, 1, 3600);
         settings.DimBrightnessPercent = Math.Clamp(settings.DimBrightnessPercent, 1, 100);
+        settings.LongPressRightClickMilliseconds = Math.Clamp(
+            settings.LongPressRightClickMilliseconds,
+            200,
+            2000);
         settings.Options ??= new Dictionary<string, SavedOptionState>(StringComparer.Ordinal);
         settings.LastRemotePath = string.IsNullOrWhiteSpace(settings.LastRemotePath)
             ? "/sdcard/"

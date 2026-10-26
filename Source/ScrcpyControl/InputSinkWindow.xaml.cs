@@ -87,6 +87,7 @@ public partial class InputSinkWindow : Window
     }
 
     public event EventHandler<string>? TextSubmitted;
+    public event EventHandler? EnterKeyRequested;
     public event EventHandler? Cancelled;
 
     public void ShowAtScreenPoint(int screenX, int screenY, IntPtr scrcpyWindow)
@@ -199,6 +200,23 @@ public partial class InputSinkWindow : Window
             return;
         }
 
+        if (string.IsNullOrWhiteSpace(InputBox.Text) &&
+            e.Key is Key.Left or Key.Up or Key.Right or Key.Down)
+        {
+            // Nothing pending locally: let the arrow keys move the caret inside
+            // the phone's text field instead of a meaningless local caret.
+            e.Handled = true;
+            _autoSubmitTimer.Stop();
+            SendKeyToDevice(e.Key switch
+            {
+                Key.Left => NativeMethods.VK_LEFT,
+                Key.Up => NativeMethods.VK_UP,
+                Key.Right => NativeMethods.VK_RIGHT,
+                _ => NativeMethods.VK_DOWN
+            });
+            return;
+        }
+
         if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
         {
             switch (e.Key)
@@ -288,6 +306,14 @@ public partial class InputSinkWindow : Window
             (Keyboard.Modifiers & ModifierKeys.Shift) == 0)
         {
             e.Handled = true;
+            if (string.IsNullOrWhiteSpace(InputBox.Text))
+            {
+                // Nothing pending locally: let the device decide what Enter
+                // means (send / search / newline), exactly as a real keyboard.
+                EnterKeyRequested?.Invoke(this, EventArgs.Empty);
+                return;
+            }
+
             Commit();
         }
     }

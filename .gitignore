@@ -7,6 +7,9 @@
 .vs/
 .idea/
 
+# Local test runtime (scrcpy binaries + freshly built exe)
+/publish-test/
+
 # Local IDE and user files
 *.user
 *.suo
