@@ -21,9 +21,17 @@ internal static class NativeMethods
     public const int WM_XBUTTONUP = 0x020C;
     public const int WM_MOUSEHWHEEL = 0x020E;
     public const int WM_QUIT = 0x0012;
+    public const int WM_TIMER = 0x0113;
     public const uint GA_ROOT = 2;
+    public const uint INPUT_MOUSE = 0;
     public const uint INPUT_KEYBOARD = 1;
     public const uint KEYEVENTF_KEYUP = 0x0002;
+    public const uint MOUSEEVENTF_MOVE = 0x0001;
+    public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+    public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+    public const int SM_CXSCREEN = 0;
+    public const int SM_CYSCREEN = 1;
     public const int GWL_EXSTYLE = -20;
     public const int WS_EX_TOOLWINDOW = 0x00000080;
     public const int WM_HOTKEY = 0x0312;
@@ -40,6 +48,13 @@ internal static class NativeMethods
     public const ushort VK_RWIN = 0x5C;
     public const ushort VK_O = 0x4F;
     public const ushort VK_V = 0x56;
+    public const ushort VK_S = 0x53;
+    public const ushort VK_B = 0x42;
+    public const ushort VK_RETURN = 0x0D;
+    public const ushort VK_LEFT = 0x25;
+    public const ushort VK_UP = 0x26;
+    public const ushort VK_RIGHT = 0x27;
+    public const ushort VK_DOWN = 0x28;
     public const ushort VK_BACK = 0x08;
     public const ushort VK_DELETE = 0x2E;
     public const ushort VK_A = 0x41;
@@ -230,6 +245,16 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern uint GetDpiForWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern int GetSystemMetrics(int nIndex);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetTimer(IntPtr hWnd, UIntPtr nIDEvent, uint uElapse, IntPtr lpTimerFunc);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool KillTimer(IntPtr hWnd, UIntPtr uIDEvent);
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
     public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);

@@ -152,63 +152,136 @@ public sealed class ScrcpyProcessService : IDisposable
         LogReceived?.Invoke(this, turnScreenOn ? "已发送亮屏快捷键" : "已发送息屏快捷键");
     }
 
-    public async Task SendPasteShortcutAsync(
+    public Task SendPasteShortcutAsync(
         string shortcutModifier,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        SendKeyChordAsync(
+            NativeMethods.VK_V,
+            shift: false,
+            shortcutModifier,
+            cancellationToken);
+
+    public Task SendAppSwitchShortcutAsync(
+        string shortcutModifier,
+        CancellationToken cancellationToken = default) =>
+        SendKeyChordAsync(
+            NativeMethods.VK_S,
+            shift: false,
+            shortcutModifier,
+            cancellationToken);
+
+    public Task SendBackShortcutAsync(
+        string shortcutModifier,
+        CancellationToken cancellationToken = default) =>
+        SendKeyChordAsync(
+            NativeMethods.VK_B,
+            shift: false,
+            shortcutModifier,
+            cancellationToken);
+
+    /// <summary>
+    /// Posts a plain Ctrl+V that scrcpy forwards to the device instead of
+    /// handling as its own shortcut. Apps that ignore the injected
+    /// KEYCODE_PASTE (e.g. Flutter based screens) still handle Ctrl+V.
+    /// </summary>
+    public async Task SendTextPasteKeyAsync(CancellationToken cancellationToken = default)
     {
         if (!IsRunning)
         {
             throw new InvalidOperationException("scrcpy 尚未运行");
         }
 
-        if (_windowHandle == IntPtr.Zero && _process is not null)
+        await EnsureWindowHandleAsync(cancellationToken).ConfigureAwait(false);
+        if (_windowHandle == IntPtr.Zero)
         {
-            for (var attempt = 0; attempt < 30; attempt++)
-            {
-                _process.Refresh();
-                if (_process.MainWindowHandle != IntPtr.Zero)
-                {
-                    _windowHandle = _process.MainWindowHandle;
-                    break;
-                }
-                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-            }
+            throw new InvalidOperationException("找不到 scrcpy 投屏窗口");
         }
 
+        var queued = true;
+        queued &= PostKey(NativeMethods.WM_KEYDOWN, NativeMethods.VK_LCONTROL);
+        queued &= PostKey(NativeMethods.WM_KEYDOWN, NativeMethods.VK_V);
+        queued &= PostKey(NativeMethods.WM_KEYUP, NativeMethods.VK_V);
+        queued &= PostKey(NativeMethods.WM_KEYUP, NativeMethods.VK_LCONTROL);
+
+        if (!queued)
+        {
+            throw new InvalidOperationException("无法向 scrcpy 窗口发送 Ctrl+V");
+        }
+
+        await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task SendKeyChordAsync(
+        ushort virtualKey,
+        bool shift,
+        string shortcutModifier,
+        CancellationToken cancellationToken)
+    {
+        if (!IsRunning)
+        {
+            throw new InvalidOperationException("scrcpy 尚未运行");
+        }
+
+        await EnsureWindowHandleAsync(cancellationToken).ConfigureAwait(false);
         if (_windowHandle == IntPtr.Zero)
         {
             throw new InvalidOperationException("找不到 scrcpy 投屏窗口");
         }
 
         var modifier = ResolveModifier(shortcutModifier);
-        var queued =
-            NativeMethods.PostMessage(
-                _windowHandle,
-                NativeMethods.WM_KEYDOWN,
-                (UIntPtr)modifier,
-                IntPtr.Zero) &
-            NativeMethods.PostMessage(
-                _windowHandle,
-                NativeMethods.WM_KEYDOWN,
-                (UIntPtr)NativeMethods.VK_V,
-                IntPtr.Zero) &
-            NativeMethods.PostMessage(
-                _windowHandle,
-                NativeMethods.WM_KEYUP,
-                (UIntPtr)NativeMethods.VK_V,
-                IntPtr.Zero) &
-            NativeMethods.PostMessage(
-                _windowHandle,
-                NativeMethods.WM_KEYUP,
-                (UIntPtr)modifier,
-                IntPtr.Zero);
+
+        // Posted one by one (no short-circuit) so a single failure cannot leave
+        // the modifier logically stuck down inside scrcpy.
+        var queued = true;
+        queued &= PostKey(NativeMethods.WM_KEYDOWN, modifier);
+        if (shift)
+        {
+            queued &= PostKey(NativeMethods.WM_KEYDOWN, NativeMethods.VK_SHIFT);
+        }
+
+        queued &= PostKey(NativeMethods.WM_KEYDOWN, virtualKey);
+        queued &= PostKey(NativeMethods.WM_KEYUP, virtualKey);
+        if (shift)
+        {
+            queued &= PostKey(NativeMethods.WM_KEYUP, NativeMethods.VK_SHIFT);
+        }
+
+        queued &= PostKey(NativeMethods.WM_KEYUP, modifier);
 
         if (!queued)
         {
-            throw new InvalidOperationException("无法向 scrcpy 窗口发送粘贴快捷键");
+            throw new InvalidOperationException(
+                $"无法向 scrcpy 窗口发送快捷键 0x{virtualKey:X2}");
         }
 
         await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+    }
+
+    private bool PostKey(int message, ushort virtualKey) =>
+        NativeMethods.PostMessage(
+            _windowHandle,
+            (uint)message,
+            (UIntPtr)virtualKey,
+            IntPtr.Zero);
+
+    private async Task EnsureWindowHandleAsync(CancellationToken cancellationToken)
+    {
+        if (_windowHandle != IntPtr.Zero || _process is null)
+        {
+            return;
+        }
+
+        for (var attempt = 0; attempt < 30; attempt++)
+        {
+            _process.Refresh();
+            if (_process.MainWindowHandle != IntPtr.Zero)
+            {
+                _windowHandle = _process.MainWindowHandle;
+                return;
+            }
+
+            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task SendShortcutAsync(
@@ -309,7 +382,7 @@ public sealed class ScrcpyProcessService : IDisposable
         }
     }
 
-    private void ActivateWindow()
+    public void ActivateWindow()
     {
         var foreground = NativeMethods.GetForegroundWindow();
         if (foreground == _windowHandle)

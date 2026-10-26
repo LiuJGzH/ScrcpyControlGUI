@@ -216,7 +216,7 @@
                             Padding="8"
                             Margin="0,0,0,12">
                         <UniformGrid x:Name="PhoneControlBar"
-                                     Columns="10"
+                                     Columns="11"
                                      IsEnabled="False">
                             <Button x:Name="PhoneBackButton"
                                     Style="{StaticResource DeviceControlButton}"
@@ -280,6 +280,23 @@
                                                FontSize="16"
                                                HorizontalAlignment="Center" />
                                     <TextBlock Text="菜单"
+                                               FontSize="11"
+                                               TextWrapping="NoWrap"
+                                               HorizontalAlignment="Center"
+                                               Margin="0,4,0,0" />
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="PhoneVoiceAssistButton"
+                                    Style="{StaticResource DeviceControlButton}"
+                                    Tag="voice_assist"
+                                    Click="PhoneKeyControl_Click"
+                                    ToolTip="唤醒语音助手 / Voice assistant">
+                                <StackPanel>
+                                    <TextBlock Text="&#xE720;"
+                                               FontFamily="Segoe MDL2 Assets"
+                                               FontSize="16"
+                                               HorizontalAlignment="Center" />
+                                    <TextBlock Text="语音助手"
                                                FontSize="11"
                                                TextWrapping="NoWrap"
                                                HorizontalAlignment="Center"
@@ -926,6 +943,36 @@
                                                    Margin="8,0,0,0" />
                                     </Grid>
                                     <TextBlock Text="默认 100 毫秒，可设置 50–5000 毫秒。"
+                                               Style="{StaticResource MutedText}"
+                                               Margin="210,0,0,12" />
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="210" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="App 级粘贴包名" VerticalAlignment="Center" />
+                                        <TextBox x:Name="AppLevelPasteBox" Grid.Column="1" />
+                                    </Grid>
+                                    <TextBlock Text="逗号分隔。列出的应用会忽略 scrcpy 注入的粘贴键，改用透传 Ctrl+V。默认 com.taobao.idlefish（闲鱼）。"
+                                               Style="{StaticResource MutedText}"
+                                               Margin="210,0,0,12" />
+                                    <CheckBox x:Name="LongPressRightClickCheckBox"
+                                              Content="长按鼠标右键切换为最近任务 / Long-press right click = Recents"
+                                              Margin="0,0,0,12" />
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="210" />
+                                            <ColumnDefinition Width="120" />
+                                            <ColumnDefinition Width="80" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="长按判定时间" VerticalAlignment="Center" />
+                                        <TextBox x:Name="LongPressRightClickBox" Grid.Column="1" />
+                                        <TextBlock Grid.Column="2"
+                                                   Text="毫秒"
+                                                   VerticalAlignment="Center"
+                                                   Margin="8,0,0,0" />
+                                    </Grid>
+                                    <TextBlock Text="默认 450 毫秒，可设置 200–2000 毫秒；短按仍是返回，长按改为最近任务。"
                                                Style="{StaticResource MutedText}"
                                                Margin="210,0,0,12" />
                                     <Grid Margin="0,0,0,8">

@@ -129,13 +129,17 @@ public sealed class AdbService
         CancellationToken cancellationToken = default)
     {
         brightness = Math.Clamp(brightness, 1, 255);
-        await RunShellAsync(
-            serial,
-            $"settings put system screen_brightness {brightness}",
-            cancellationToken).ConfigureAwait(false);
+
+        // Mode first, value second. Writing the mode switches the system into
+        // auto-brightness, which discards a brightness value written before it,
+        // so the restore would silently fall back to the dimmed level.
         await RunShellAsync(
             serial,
             $"settings put system screen_brightness_mode {Math.Clamp(mode, 0, 1)}",
+            cancellationToken).ConfigureAwait(false);
+        await RunShellAsync(
+            serial,
+            $"settings put system screen_brightness {brightness}",
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -162,6 +166,76 @@ public sealed class AdbService
         }
 
         return false;
+    }
+
+    public async Task<(bool Focused, string Package)> GetTextInputFocusAsync(
+        string serial,
+        CancellationToken cancellationToken = default)
+    {
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            var dump = await RunShellAsync(
+                serial,
+                "dumpsys input_method",
+                cancellationToken).ConfigureAwait(false);
+
+            if (ContainsActiveTextInput(dump))
+            {
+                return (true, ExtractEditorPackage(dump) ?? string.Empty);
+            }
+
+            if (attempt < 3)
+            {
+                await Task.Delay(120, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        return (false, string.Empty);
+    }
+
+    /// <summary>
+    /// Reads the package that owns the active editor from an input_method dump.
+    /// Some apps ignore the injected KEYCODE_PASTE, so the caller needs to know
+    /// which app is focused to pick a paste strategy.
+    /// </summary>
+    public static string? ExtractEditorPackage(string dump)
+    {
+        if (string.IsNullOrWhiteSpace(dump))
+        {
+            return null;
+        }
+
+        var lines = dump.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var insideEditor = false;
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.Trim();
+            if (line.StartsWith("mCurrentEditorInfo", StringComparison.Ordinal))
+            {
+                insideEditor = true;
+                continue;
+            }
+
+            if (!insideEditor)
+            {
+                continue;
+            }
+
+            if (line.StartsWith("packageName=", StringComparison.Ordinal))
+            {
+                var value = line["packageName=".Length..].Trim();
+                var separator = value.IndexOf(' ');
+                return separator > 0 ? value[..separator] : value;
+            }
+
+            if (line.StartsWith("mServedView", StringComparison.Ordinal) ||
+                line.StartsWith("mCurMethodId", StringComparison.Ordinal))
+            {
+                break;
+            }
+        }
+
+        return null;
     }
 
     public static bool ContainsActiveTextInput(string dump)

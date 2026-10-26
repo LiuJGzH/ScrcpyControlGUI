@@ -16,7 +16,7 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>false</PublishReadyToRun>
-    <Version>0.0.1</Version>
-    <FileVersion>0.0.1.0</FileVersion>
+    <Version>0.0.2</Version>
+    <FileVersion>0.0.2.0</FileVersion>
   </PropertyGroup>
 </Project>

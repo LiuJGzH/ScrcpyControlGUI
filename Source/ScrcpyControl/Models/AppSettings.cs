@@ -7,6 +7,9 @@ public sealed class AppSettings
     public bool ClickToInputEnabled { get; set; } = true;
     public bool AutoSubmitEnabled { get; set; } = true;
     public int AutoSubmitDebounceMilliseconds { get; set; } = 100;
+    public bool LongPressRightClickEnabled { get; set; } = true;
+    public int LongPressRightClickMilliseconds { get; set; } = 450;
+    public string AppLevelPastePackages { get; set; } = "com.taobao.idlefish";
     public int IdleSeconds { get; set; } = 60;
     public int DimBrightnessPercent { get; set; } = 10;
     public string ExtraArguments { get; set; } = string.Empty;

@@ -42,6 +42,7 @@ public partial class MainWindow : Window
     private bool _lastDeviceRefreshFailed;
     private string? _lastDeviceSnapshot;
     private string _currentRemotePath = "/sdcard/";
+    private string _currentInputPackage = string.Empty;
     private CancellationTokenSource? _transferCancellation;
     private InputSinkWindow? _inputSinkWindow;
     private readonly SemaphoreSlim _textSendGate = new(1, 1);
@@ -49,6 +50,7 @@ public partial class MainWindow : Window
     private HwndSource? _hotKeySource;
     private IntPtr _hotKeyWindow;
     private const int InputSinkHotKeyId = 0x5343;
+    private const int ClipboardSyncDelayMilliseconds = 120;
 
     public MainWindow()
     {
@@ -77,6 +79,8 @@ public partial class MainWindow : Window
         _scrcpy.ProcessExited += Scrcpy_ProcessExited;
         _inputMonitor.ActivityDetected += InputMonitor_ActivityDetected;
         _inputMonitor.ScrcpyClicked += InputMonitor_ScrcpyClicked;
+        _inputMonitor.RightShortPressRequested += InputMonitor_RightShortPressRequested;
+        _inputMonitor.RightLongPressTriggered += InputMonitor_RightLongPressTriggered;
         _inputMonitor.MonitorError += InputMonitor_MonitorError;
         _idleBrightness.StatusChanged += IdleBrightness_StatusChanged;
         _idleBrightness.ErrorOccurred += IdleBrightness_ErrorOccurred;
@@ -422,7 +426,14 @@ public partial class MainWindow : Window
 
             if (_scrcpy.ProcessId is { } pid)
             {
-                _inputMonitor.Start(pid, _scrcpy.WindowHandle);
+                _inputMonitor.Start(
+                    pid,
+                    _scrcpy.WindowHandle,
+                    _appSettings.LongPressRightClickEnabled,
+                    _appSettings.LongPressRightClickMilliseconds);
+                AppendLog(_appSettings.LongPressRightClickEnabled
+                    ? $"右键长按已启用：保持 {_appSettings.LongPressRightClickMilliseconds} 毫秒切换最近任务"
+                    : "右键长按未启用，右键保持返回功能");
             }
 
             _idleBrightness.Start(
@@ -581,7 +592,7 @@ public partial class MainWindow : Window
             _ => (string.Empty, string.Empty)
         };
 
-        if (string.IsNullOrEmpty(keyCode))
+        if (action != "voice_assist" && string.IsNullOrEmpty(keyCode))
         {
             return;
         }
@@ -589,6 +600,12 @@ public partial class MainWindow : Window
         button.IsEnabled = false;
         try
         {
+            if (action == "voice_assist")
+            {
+                await LaunchVoiceAssistantAsync();
+                return;
+            }
+
             await _adb.RunShellAsync(
                 _selectedDevice.Serial,
                 $"input keyevent {keyCode}",
@@ -606,6 +623,38 @@ public partial class MainWindow : Window
             button.IsEnabled = true;
             UpdatePhoneControlAvailability();
         }
+    }
+
+    private async Task LaunchVoiceAssistantAsync()
+    {
+        if (_selectedDevice?.IsUsable != true)
+        {
+            return;
+        }
+
+        var serial = _selectedDevice.Serial;
+
+        // Xiaomi registers XiaoAi on VOICE_COMMAND; ASSIST only resolves to the
+        // system resolver, so the generic VOICE_ASSIST key does nothing here.
+        var output = await _adb.RunShellAsync(
+            serial,
+            "am start -a android.intent.action.VOICE_COMMAND",
+            _appCancellation.Token);
+
+        if (output.Contains("Error", StringComparison.OrdinalIgnoreCase) ||
+            output.Contains("does not exist", StringComparison.OrdinalIgnoreCase))
+        {
+            await _adb.RunShellAsync(
+                serial,
+                "input keyevent KEYCODE_VOICE_ASSIST",
+                _appCancellation.Token);
+            AppendLog("语音命令 Intent 不可用，已改用 VOICE_ASSIST 键");
+            BottomStatusText.Text = "已发送语音助手键";
+            return;
+        }
+
+        AppendLog("已通过 VOICE_COMMAND 唤醒语音助手");
+        BottomStatusText.Text = "已唤醒语音助手";
     }
 
     private async void ScreenshotGallery_Click(object sender, RoutedEventArgs e)
@@ -835,6 +884,9 @@ public partial class MainWindow : Window
         ClickToInputCheckBox.IsChecked = _appSettings.ClickToInputEnabled;
         AutoSubmitCheckBox.IsChecked = _appSettings.AutoSubmitEnabled;
         AutoSubmitDebounceBox.Text = _appSettings.AutoSubmitDebounceMilliseconds.ToString();
+        LongPressRightClickCheckBox.IsChecked = _appSettings.LongPressRightClickEnabled;
+        LongPressRightClickBox.Text = _appSettings.LongPressRightClickMilliseconds.ToString();
+        AppLevelPasteBox.Text = _appSettings.AppLevelPastePackages;
         IdleSecondsBox.Text = _appSettings.IdleSeconds.ToString();
         DimBrightnessBox.Text = _appSettings.DimBrightnessPercent.ToString();
         ExtraArgumentsBox.Text = _appSettings.ExtraArguments;
@@ -854,6 +906,12 @@ public partial class MainWindow : Window
             int.TryParse(AutoSubmitDebounceBox.Text, out var autoSubmitDebounce)
                 ? Math.Clamp(autoSubmitDebounce, 50, 5000)
                 : 100;
+        _appSettings.LongPressRightClickEnabled = LongPressRightClickCheckBox.IsChecked == true;
+        _appSettings.LongPressRightClickMilliseconds =
+            int.TryParse(LongPressRightClickBox.Text, out var longPressMilliseconds)
+                ? Math.Clamp(longPressMilliseconds, 200, 2000)
+                : 450;
+        _appSettings.AppLevelPastePackages = AppLevelPasteBox.Text.Trim();
         _appSettings.IdleSeconds = int.TryParse(IdleSecondsBox.Text, out var seconds)
             ? Math.Clamp(seconds, 1, 3600)
             : 60;
@@ -946,6 +1004,72 @@ public partial class MainWindow : Window
         _ = HandleScrcpyClickAsync(e, generation);
     }
 
+    private void InputMonitor_RightShortPressRequested(object? sender, EventArgs e)
+    {
+        Dispatcher.BeginInvoke(new Action(() => _ = SendBackOrWakeAsync()));
+    }
+
+    private async Task SendBackOrWakeAsync()
+    {
+        try
+        {
+            var shortcutModifier = GetOptionValue("--shortcut-mod") ?? "lalt,lsuper";
+            if (_screenOff)
+            {
+                // Mirrors scrcpy's own right-click behaviour: wake the device
+                // instead of sending BACK while the screen is off.
+                await _scrcpy.SendScreenShortcutAsync(
+                    turnScreenOn: true,
+                    shortcutModifier,
+                    _appCancellation.Token);
+                ApplyDeviceScreenState(screenOff: false);
+                AppendLog("右键短按：手机屏幕已点亮");
+                BottomStatusText.Text = "手机屏幕已点亮";
+                return;
+            }
+
+            await _scrcpy.SendBackShortcutAsync(shortcutModifier, _appCancellation.Token);
+            AppendLog("右键短按：已发送返回");
+            BottomStatusText.Text = "已发送返回";
+        }
+        catch (OperationCanceledException) when (_appCancellation.IsCancellationRequested)
+        {
+            // Application or scrcpy is shutting down.
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"发送返回失败：{ex.Message}");
+            BottomStatusText.Text = "发送返回失败";
+        }
+    }
+
+    private void InputMonitor_RightLongPressTriggered(object? sender, EventArgs e)
+    {
+        Dispatcher.BeginInvoke(new Action(() => _ = SendAppSwitchAsync()));
+    }
+
+    private async Task SendAppSwitchAsync()
+    {
+        try
+        {
+            var shortcutModifier = GetOptionValue("--shortcut-mod") ?? "lalt,lsuper";
+            await _scrcpy.SendAppSwitchShortcutAsync(
+                shortcutModifier,
+                _appCancellation.Token);
+            AppendLog("检测到右键长按，已切换为最近任务");
+            BottomStatusText.Text = "已切换到最近任务";
+        }
+        catch (OperationCanceledException) when (_appCancellation.IsCancellationRequested)
+        {
+            // Application or scrcpy is shutting down.
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"切换最近任务失败：{ex.Message}");
+            BottomStatusText.Text = "切换最近任务失败";
+        }
+    }
+
     private async Task HandleScrcpyClickAsync(ScrcpyClickEventArgs click, int generation)
     {
         try
@@ -964,15 +1088,16 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var inputFocused = await _adb.IsTextInputFocusedAsync(
+            var focus = await _adb.GetTextInputFocusAsync(
                 _selectedDevice.Serial,
                 _appCancellation.Token).ConfigureAwait(false);
-            if (!inputFocused || generation != Volatile.Read(ref _inputClickGeneration))
+            if (!focus.Focused || generation != Volatile.Read(ref _inputClickGeneration))
             {
                 return;
             }
 
-            AppendLog("检测到手机输入框，正在打开透明中文输入宿主");
+            _currentInputPackage = focus.Package;
+            AppendLog($"检测到手机输入框，正在打开透明中文输入宿主（{focus.Package}）");
             await Dispatcher.InvokeAsync(() => ShowInputSink(click));
         }
         catch (OperationCanceledException)
@@ -1006,6 +1131,7 @@ public partial class MainWindow : Window
             _appSettings.AutoSubmitEnabled,
             _appSettings.AutoSubmitDebounceMilliseconds);
         sink.TextSubmitted += InputSink_TextSubmitted;
+        sink.EnterKeyRequested += InputSink_EnterKeyRequested;
         sink.Cancelled += InputSink_Cancelled;
         sink.Closed += InputSink_Closed;
         _inputSinkWindow = sink;
@@ -1065,6 +1191,47 @@ public partial class MainWindow : Window
         BottomStatusText.Text = "已取消中文输入";
     }
 
+    private void InputSink_EnterKeyRequested(object? sender, EventArgs e)
+    {
+        _ = SendEnterKeyAsync();
+    }
+
+    private async Task SendEnterKeyAsync()
+    {
+        if (_selectedDevice?.IsUsable != true)
+        {
+            return;
+        }
+
+        try
+        {
+            await _textSendGate.WaitAsync(_appCancellation.Token);
+            try
+            {
+                await _adb.RunShellAsync(
+                    _selectedDevice.Serial,
+                    "input keyevent KEYCODE_ENTER",
+                    _appCancellation.Token);
+            }
+            finally
+            {
+                _textSendGate.Release();
+            }
+
+            AppendLog("空输入宿主按下回车，已向手机发送回车键");
+            BottomStatusText.Text = "已向手机发送回车";
+        }
+        catch (OperationCanceledException) when (_appCancellation.IsCancellationRequested)
+        {
+            // Application or scrcpy is shutting down.
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"发送回车失败：{ex.Message}");
+            BottomStatusText.Text = "发送回车失败";
+        }
+    }
+
     private void InputSink_Closed(object? sender, EventArgs e)
     {
         AppendLog("透明中文输入宿主已关闭");
@@ -1082,14 +1249,46 @@ public partial class MainWindow : Window
         }
 
         await SetPersistentClipboardTextWithRetryAsync(text);
+
         var shortcutModifier = GetOptionValue("--shortcut-mod") ?? "lalt,lsuper";
-        await _scrcpy.SendPasteShortcutAsync(
-            shortcutModifier,
-            _appCancellation.Token);
+
+        // MOD+V makes scrcpy push the Windows clipboard to the device and then
+        // inject KEYCODE_PASTE. It needs no window focus, so the IME host keeps
+        // the keyboard and no keystroke gets lost while the text is in flight.
+        await _scrcpy.SendPasteShortcutAsync(shortcutModifier, _appCancellation.Token);
+
+        if (!ShortcutModifierUsesControl(shortcutModifier) &&
+            NeedsAppLevelPaste(_currentInputPackage))
+        {
+            // Some apps (闲鱼) ignore the injected KEYCODE_PASTE but do handle a
+            // real Ctrl+V. MOD+V has already synchronized the clipboard, so a
+            // forwarded Ctrl+V finishes the paste without stealing focus.
+            await Task.Delay(ClipboardSyncDelayMilliseconds, _appCancellation.Token);
+            await _scrcpy.SendTextPasteKeyAsync(_appCancellation.Token);
+            await Task.Delay(40, _appCancellation.Token);
+        }
+
         await Task.Delay(40, _appCancellation.Token);
         AppendLog("已通过剪贴板向手机发送中文文本，并保留在 Windows 剪贴板");
         BottomStatusText.Text = "中文文本已发送并保留在剪贴板，可继续输入";
         await _idleBrightness.NotifyActivityAsync();
+    }
+
+    private static bool ShortcutModifierUsesControl(string value) =>
+        value
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(token => token.Contains("ctrl", StringComparison.OrdinalIgnoreCase));
+
+    private bool NeedsAppLevelPaste(string package)
+    {
+        if (string.IsNullOrWhiteSpace(package))
+        {
+            return false;
+        }
+
+        return _appSettings.AppLevelPastePackages
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(item => string.Equals(item, package, StringComparison.OrdinalIgnoreCase));
     }
 
     private static async Task SetPersistentClipboardTextWithRetryAsync(string text)
