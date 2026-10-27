@@ -85,9 +85,11 @@ public sealed class ScrcpyInputMonitorService : IDisposable
             NativeMethods.PostThreadMessage(_threadId, NativeMethods.WM_QUIT, UIntPtr.Zero, IntPtr.Zero);
         }
 
-        if (thread.Join(TimeSpan.FromSeconds(2)) is false)
+        if (thread.Join(TimeSpan.FromMilliseconds(300)) is false)
         {
-            // The hook thread is a background thread and will not keep the process alive.
+            // The hook thread is a background thread: if the JOIN times out it
+            // still finishes on its own, and blocking the UI thread for the old
+            // two seconds made stopping scrcpy feel like a freeze.
         }
 
         _thread = null;

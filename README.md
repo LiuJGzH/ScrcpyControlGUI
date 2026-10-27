@@ -2,7 +2,7 @@
 
 面向 Windows 的 scrcpy 图形控制台。它把命令行参数、设备管理、文件传输、中文输入、手机按键、截图和运行日志集中到一个桌面界面中，同时保留 scrcpy 的独立投屏窗口。
 
-当前版本：`0.0.2`
+当前版本：`0.0.3`
 
 > 版本变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -107,7 +107,9 @@ ScrcpyControlGUI 的目标是在不修改 scrcpy 核心协议的前提下，提�
 - 支持 Windows 中文输入法和候选词。
 - 输入法组合期间不会提交拼音或未选择的候选词。
 - 自动发送默认开启，默认防抖时间为 100 ms，可在设置中调整。
-- 宿主内有文字时按 Enter 立即发送；宿主为空时按 Enter 会向手机发送回车键，由应用自身决定是发送、搜索还是换行。
+- 宿主内有文字时按 Enter 立即发送到手机输入框；宿主为空时按 Enter **直接发出消息**（定位输入栏右侧的发送按钮并模拟点击），`Ctrl+Enter` 发送换行。两者行为可在设置页互换。
+  - 之所以不是发送回车键：微信等应用把输入框声明为多行且带 `IME_FLAG_NO_ENTER_ACTION`，物理回车在系统层面只会换行，永远到不了"发送"分支。你手机软键盘上的"回车发送"是输入法自己实现的，adb 与物理键盘都复现不了，因此改为直接点击发送按钮。
+  - 发送按钮坐标按屏幕分辨率、密度与软键盘顶部实时推算，无需硬编码；键盘收起时无法可靠推算，会退回发送 `KEYCODE_ENTER`。
 - 发送后保留输入宿主，可连续输入多段文字。
 - 发送过程不抢占 Windows 前台焦点，输入密集时不会丢字，也不会把未上屏的拼音发到手机。
 - 新输入不会被发送到 scrcpy 窗口，避免文字顺序错乱。
@@ -179,7 +181,7 @@ ScrcpyControlGUI 的目标是在不修改 scrcpy 核心协议的前提下，提�
 
 ### 方式一：使用 Release 便携包
 
-1. 从 [Releases](https://github.com/LiuJGzH/ScrcpyControlGUI/releases/tag/v0.0.2) 下载 Windows x64 便携包。
+1. 从 [Releases](https://github.com/LiuJGzH/ScrcpyControlGUI/releases/tag/v0.0.3) 下载 Windows x64 便携包。
 2. 解压完整目录，不要只在压缩包内运行。
 3. 在手机中开启 USB 调试。
 4. 使用 USB 数据线连接手机和电脑。
@@ -251,21 +253,21 @@ scrcpy-win64-v5.0.1.zip
 SHA256: b12a2c4ee8be317422451fc7dcf8ee20a71b5ea7ef9ad73ddd825a25316227a5
 ```
 
-本项目 `v0.0.2` 发布资产：
+本项目 `v0.0.3` 发布资产：
 
 ```text
 ScrcpyControl.exe
-SHA256: B2840493A394A46DBE218B70C8BCB0FAA91AE2DF35DA516814346B5812FD60D6
+SHA256: 75D5792DBCD0788E74B82950C0EC9A5E5DEA226D56C7E06E6B0765B9BB0AA4A1
 
-ScrcpyControl-0.0.2-win64.zip
-SHA256: 28BF4E2A2BD2CCDD942959482F2F3FA1373803A058C7B59872EBFC9973458C43
+ScrcpyControl-0.0.3-win64.zip
+SHA256: 9F59C28ABBED4831FE3D788FEEA39155E7F6D1FE70F2C3DD2E7B0288486D2513
 ```
 
 PowerShell 校验命令：
 
 ```powershell
 Get-FileHash .\ScrcpyControl.exe -Algorithm SHA256
-Get-FileHash .\ScrcpyControl-0.0.2-win64.zip -Algorithm SHA256
+Get-FileHash .\ScrcpyControl-0.0.3-win64.zip -Algorithm SHA256
 ```
 
 ## 故障排查
@@ -362,6 +364,9 @@ ScrcpyControlGUI/
 ├─ .gitignore
 ├─ .gitattributes
 └─ Source/
+   └─ ScrcpyControl/
+      ├─ Assets/app.ico        应用图标（7 个尺寸）
+      └─ ...
    ├─ ScrcpyControl/
    │  ├─ App.xaml
    │  ├─ MainWindow.xaml
@@ -378,10 +383,10 @@ ScrcpyControlGUI/
 
 ## Release 资产
 
-`v0.0.2` 提供：
+`v0.0.3` 提供：
 
 - `ScrcpyControl.exe`：自包含控制台可执行文件。
-- `ScrcpyControl-0.0.2-win64.zip`：包含 scrcpy 5.0.1 运行环境和控制台的便携包。
+- `ScrcpyControl-0.0.3-win64.zip`：包含 scrcpy 5.0.1 运行环境和控制台的便携包。
 
 便携包中的 scrcpy 二进制遵循其原始 Apache-2.0 许可证。scrcpy 许可证会随便携包一起分发。
 
@@ -397,6 +402,8 @@ ScrcpyControlGUI/
 - 使用 `--turn-screen-off` 熄屏投屏时，scrcpy 是直接设置 display power mode 关闭面板，此时系统电源键无法点亮屏幕，需用控制台的「点亮屏幕」按钮恢复。这是 scrcpy 的固有行为，非本程序可控。
 - 「语音助手」调用的是系统默认助手；设备未设置默认助手时，该按钮可能没有响应。
 - 「长按右键切换最近任务」依赖鼠标钩子，仅在指针位于投屏窗口内时生效，且需要关闭系统的指针精度增强以外的其他鼠标拦截软件。
+- 「回车发送」通过模拟点击输入栏右侧的发送按钮实现：位置由「键盘顶部 − 输入栏高度/2」推算，依赖聊天类应用输入栏紧贴键盘的布局。布局特殊的应用可能点偏，日志会打印实际落点坐标便于校准。
+- 软键盘收起时无法可靠推算发送按钮位置，会退回发送 `KEYCODE_ENTER`；在微信这类多行输入框中该键等同于换行。
 - 首次运行未签名 EXE 时，Windows SmartScreen 可能显示“未知发布者”。
 
 ## 安全说明

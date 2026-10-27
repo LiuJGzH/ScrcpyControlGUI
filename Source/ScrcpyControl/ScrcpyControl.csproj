@@ -9,6 +9,7 @@
     <AssemblyName>ScrcpyControl</AssemblyName>
     <RootNamespace>ScrcpyControl</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -16,7 +17,12 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>false</PublishReadyToRun>
-    <Version>0.0.2</Version>
-    <FileVersion>0.0.2.0</FileVersion>
+    <Version>0.0.3</Version>
+    <FileVersion>0.0.3.0</FileVersion>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Embedded so the window icon survives single-file publishing. -->
+    <Resource Include="Assets\app.ico" />
+  </ItemGroup>
 </Project>
