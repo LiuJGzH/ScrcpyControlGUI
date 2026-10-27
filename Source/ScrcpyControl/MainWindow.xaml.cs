@@ -43,6 +43,8 @@ public partial class MainWindow : Window
     private string? _lastDeviceSnapshot;
     private string _currentRemotePath = "/sdcard/";
     private string _currentInputPackage = string.Empty;
+    private bool _isSendingMessage;
+    private DateTime _lastCaptureErrorHintAt = DateTime.MinValue;
     private CancellationTokenSource? _transferCancellation;
     private InputSinkWindow? _inputSinkWindow;
     private readonly SemaphoreSlim _textSendGate = new(1, 1);
@@ -886,6 +888,7 @@ public partial class MainWindow : Window
         AutoSubmitDebounceBox.Text = _appSettings.AutoSubmitDebounceMilliseconds.ToString();
         LongPressRightClickCheckBox.IsChecked = _appSettings.LongPressRightClickEnabled;
         LongPressRightClickBox.Text = _appSettings.LongPressRightClickMilliseconds.ToString();
+        EnterSendsMessageCheckBox.IsChecked = _appSettings.EnterSendsMessage;
         AppLevelPasteBox.Text = _appSettings.AppLevelPastePackages;
         IdleSecondsBox.Text = _appSettings.IdleSeconds.ToString();
         DimBrightnessBox.Text = _appSettings.DimBrightnessPercent.ToString();
@@ -912,6 +915,7 @@ public partial class MainWindow : Window
                 ? Math.Clamp(longPressMilliseconds, 200, 2000)
                 : 450;
         _appSettings.AppLevelPastePackages = AppLevelPasteBox.Text.Trim();
+        _appSettings.EnterSendsMessage = EnterSendsMessageCheckBox.IsChecked == true;
         _appSettings.IdleSeconds = int.TryParse(IdleSecondsBox.Text, out var seconds)
             ? Math.Clamp(seconds, 1, 3600)
             : 60;
@@ -947,6 +951,21 @@ public partial class MainWindow : Window
         {
             Dispatcher.BeginInvoke(() => ApplyDeviceScreenState(screenOff: false));
         }
+        else if (line.Contains("Capture/encoding error", StringComparison.OrdinalIgnoreCase))
+        {
+            // Typically means the panel is off while --no-power-on keeps scrcpy
+            // from waking it. Throttled: the server repeats this error per retry.
+            var now = DateTime.UtcNow;
+            if (now - _lastCaptureErrorHintAt < TimeSpan.FromSeconds(10))
+            {
+                return;
+            }
+
+            _lastCaptureErrorHintAt = now;
+            AppendLog("提示：画面采集失败，手机屏幕可能处于熄灭状态。请点击控制台的「点亮屏幕」按钮恢复。");
+            Dispatcher.BeginInvoke(() =>
+                BottomStatusText.Text = "画面采集失败：屏幕可能已熄灭，点「点亮屏幕」恢复");
+        }
     }
 
     private void ApplyDeviceScreenState(bool screenOff)
@@ -969,24 +988,64 @@ public partial class MainWindow : Window
 
     private async void Scrcpy_ProcessExited(object? sender, int exitCode)
     {
-        await Dispatcher.InvokeAsync(() =>
+        try
         {
-            AppendLog($"scrcpy 已退出，退出代码 {exitCode}");
-            UpdateRunningUi(false);
-        });
+            // This callback runs on a thread-pool thread, so every WPF object
+            // must be touched through the dispatcher. Closing the IME host from
+            // here used to throw CrossThreadInvalidAccessException and, being an
+            // async void, took the whole process down.
+            await Dispatcher.InvokeAsync(() =>
+            {
+                AppendLog($"scrcpy 已退出，退出代码 {exitCode}");
+                UpdateRunningUi(false);
 
-        if (_isStopping || _isClosing)
-        {
-            return;
+                if (_isStopping || _isClosing)
+                {
+                    return;
+                }
+
+                try
+                {
+                    _inputSinkWindow?.Cancel();
+                }
+                catch
+                {
+                    // The host window may already be closed.
+                }
+
+                _inputSinkWindow = null;
+                _screenOff = false;
+                _activeNoControl = false;
+            });
+
+            if (_isStopping || _isClosing)
+            {
+                return;
+            }
+
+            try
+            {
+                _inputMonitor.Stop();
+            }
+            catch
+            {
+                // Hooks may already be torn down.
+            }
+
+            await _idleBrightness.RestoreAsync();
+            _idleBrightness.Stop();
         }
-
-        _inputSinkWindow?.Cancel();
-        _inputSinkWindow = null;
-        _inputMonitor.Stop();
-        await _idleBrightness.RestoreAsync();
-        _idleBrightness.Stop();
-        _screenOff = false;
-        _activeNoControl = false;
+        catch (Exception ex)
+        {
+            try
+            {
+                await _settings.AppendLogAsync($"处理 scrcpy 退出时出错：{ex}");
+            }
+            catch
+            {
+                // Logging must never crash the shutdown path.
+            }
+        }
     }
 
     private void InputMonitor_ActivityDetected(object? sender, EventArgs e)
@@ -1129,9 +1188,11 @@ public partial class MainWindow : Window
 
         var sink = new InputSinkWindow(
             _appSettings.AutoSubmitEnabled,
-            _appSettings.AutoSubmitDebounceMilliseconds);
+            _appSettings.AutoSubmitDebounceMilliseconds,
+            _appSettings.EnterSendsMessage);
         sink.TextSubmitted += InputSink_TextSubmitted;
-        sink.EnterKeyRequested += InputSink_EnterKeyRequested;
+        sink.SendMessageRequested += InputSink_SendMessageRequested;
+        sink.NewlineRequested += InputSink_NewlineRequested;
         sink.Cancelled += InputSink_Cancelled;
         sink.Closed += InputSink_Closed;
         _inputSinkWindow = sink;
@@ -1191,12 +1252,79 @@ public partial class MainWindow : Window
         BottomStatusText.Text = "已取消中文输入";
     }
 
-    private void InputSink_EnterKeyRequested(object? sender, EventArgs e)
+    private void InputSink_SendMessageRequested(object? sender, EventArgs e)
     {
-        _ = SendEnterKeyAsync();
+        _ = SendMessageToDeviceAsync();
     }
 
-    private async Task SendEnterKeyAsync()
+    private void InputSink_NewlineRequested(object? sender, EventArgs e)
+    {
+        _ = SendNewlineToDeviceAsync();
+    }
+
+    private async Task SendMessageToDeviceAsync()
+    {
+        if (_selectedDevice?.IsUsable != true)
+        {
+            return;
+        }
+
+        // Second line of defence against repeated triggers (auto-repeat keys,
+        // double events): only one send may be in flight at a time.
+        if (_isSendingMessage)
+        {
+            return;
+        }
+
+        _isSendingMessage = true;
+        try
+        {
+            await _textSendGate.WaitAsync(_appCancellation.Token);
+            try
+            {
+                var tap = await _adb.TapSendButtonAsync(
+                    _selectedDevice.Serial,
+                    _appCancellation.Token);
+
+                if (!tap.Tapped)
+                {
+                    // Keyboard hidden: the button position cannot be derived
+                    // reliably, so fall back to a plain ENTER.
+                    await _adb.RunShellAsync(
+                        _selectedDevice.Serial,
+                        "input keyevent KEYCODE_ENTER",
+                        _appCancellation.Token);
+                    AppendLog("软键盘未显示，已退回发送 ENTER");
+                }
+                else
+                {
+                    AppendLog($"已点击发送按钮（{tap.X},{tap.Y}）");
+                }
+            }
+            finally
+            {
+                _textSendGate.Release();
+            }
+
+            AppendLog("空输入宿主按回车，已触发发送");
+            BottomStatusText.Text = "已触发发送";
+        }
+        catch (OperationCanceledException) when (_appCancellation.IsCancellationRequested)
+        {
+            // Application or scrcpy is shutting down.
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"触发发送失败：{ex.Message}");
+            BottomStatusText.Text = "触发发送失败";
+        }
+        finally
+        {
+            _isSendingMessage = false;
+        }
+    }
+
+    private async Task SendNewlineToDeviceAsync()
     {
         if (_selectedDevice?.IsUsable != true)
         {
@@ -1218,8 +1346,8 @@ public partial class MainWindow : Window
                 _textSendGate.Release();
             }
 
-            AppendLog("空输入宿主按下回车，已向手机发送回车键");
-            BottomStatusText.Text = "已向手机发送回车";
+            AppendLog("空输入宿主按回车，已向手机发送换行");
+            BottomStatusText.Text = "已向手机发送换行";
         }
         catch (OperationCanceledException) when (_appCancellation.IsCancellationRequested)
         {
@@ -1227,8 +1355,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            AppendLog($"发送回车失败：{ex.Message}");
-            BottomStatusText.Text = "发送回车失败";
+            AppendLog($"发送换行失败：{ex.Message}");
+            BottomStatusText.Text = "发送换行失败";
         }
     }
 
@@ -1461,6 +1589,19 @@ public partial class MainWindow : Window
 
     private void TrySetWindowIcon()
     {
+        try
+        {
+            // Prefer the icon embedded in the assembly: a single-file publish
+            // does not lay the ico next to the exe.
+            Icon = new BitmapImage(
+                new Uri("pack://application:,,,/Assets/app.ico", UriKind.Absolute));
+            return;
+        }
+        catch
+        {
+            // Fall through to the loose file below.
+        }
+
         try
         {
             if (!File.Exists(_paths.IconFile))

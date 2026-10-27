@@ -945,6 +945,9 @@
                                     <TextBlock Text="默认 100 毫秒，可设置 50–5000 毫秒。"
                                                Style="{StaticResource MutedText}"
                                                Margin="210,0,0,12" />
+                                    <CheckBox x:Name="EnterSendsMessageCheckBox"
+                                              Content="空输入宿主时 Enter 发送、Ctrl+Enter 换行（取消则两者互换）"
+                                              Margin="0,0,0,12" />
                                     <Grid Margin="0,0,0,8">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="210" />

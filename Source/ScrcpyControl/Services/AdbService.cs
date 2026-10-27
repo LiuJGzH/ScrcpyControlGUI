@@ -7,6 +7,8 @@ namespace ScrcpyControl.Services;
 public sealed class AdbService
 {
     private readonly PathService _paths;
+    private string? _metricsCacheSerial;
+    private DisplayMetrics? _metricsCache;
 
     public AdbService(PathService paths)
     {
@@ -141,6 +143,131 @@ public sealed class AdbService
             serial,
             $"settings put system screen_brightness {brightness}",
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public sealed record DisplayMetrics(int Width, int Height, int Density);
+
+    /// <summary>
+    /// Resolves the on-screen position of the send button that sits at the
+    /// right end of the input bar, then taps it. WeChat marks its editor with
+    /// IME_FLAG_NO_ENTER_ACTION, so a physical ENTER can never submit a message
+    /// and tapping the button is the only way to send without an IME.
+    /// </summary>
+    public async Task<(bool Tapped, int X, int Y)> TapSendButtonAsync(
+        string serial,
+        CancellationToken cancellationToken = default)
+    {
+        var metrics = await GetDisplayMetricsAsync(serial, cancellationToken).ConfigureAwait(false);
+        var imeTop = await GetImeTopAsync(serial, cancellationToken).ConfigureAwait(false);
+
+        if (imeTop <= 0)
+        {
+            // Without a visible keyboard the input bar cannot be located, and a
+            // blind tap lands on whatever sits at the bottom edge of the screen.
+            return (false, 0, 0);
+        }
+
+        var dp = metrics.Density / 160d;
+        var barHeight = (int)Math.Round(56 * dp);
+        var y = imeTop - barHeight / 2;
+        var x = metrics.Width - (int)Math.Round(25 * dp);
+
+        await RunShellAsync(serial, $"input tap {x} {y}", cancellationToken)
+            .ConfigureAwait(false);
+
+        return (true, x, y);
+    }
+
+    public async Task<DisplayMetrics> GetDisplayMetricsAsync(
+        string serial,
+        CancellationToken cancellationToken = default)
+    {
+        // Screen size and density never change during a session, and each
+        // adb round trip costs an extra process launch on the send path.
+        if (_metricsCache is not null &&
+            string.Equals(_metricsCacheSerial, serial, StringComparison.Ordinal))
+        {
+            return _metricsCache;
+        }
+
+        var sizeText = await RunShellAsync(serial, "wm size", cancellationToken)
+            .ConfigureAwait(false);
+        var densityText = await RunShellAsync(serial, "wm density", cancellationToken)
+            .ConfigureAwait(false);
+
+        var sizeMatch = Regex.Match(sizeText, @"(\d+)x(\d+)");
+        if (!sizeMatch.Success)
+        {
+            throw new InvalidOperationException("无法读取屏幕分辨率");
+        }
+
+        var width = int.Parse(
+            sizeMatch.Groups[1].Value,
+            NumberStyles.Integer,
+            CultureInfo.InvariantCulture);
+        var height = int.Parse(
+            sizeMatch.Groups[2].Value,
+            NumberStyles.Integer,
+            CultureInfo.InvariantCulture);
+
+        var densityMatch = Regex.Match(densityText, @"(\d+)");
+        var density = densityMatch.Success
+            ? int.Parse(densityMatch.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture)
+            : 160;
+
+        var metrics = new DisplayMetrics(width, height, density);
+        _metricsCache = metrics;
+        _metricsCacheSerial = serial;
+        return metrics;
+    }
+
+    /// <summary>
+    /// Returns the top edge of the soft keyboard in absolute screen pixels, or 0
+    /// when it is not shown. Calibrated against real touches on a 1116x2480
+    /// device: touchableRegion.top is already in screen coordinates (1511 maps
+    /// to an input bar centre of 1432, i.e. 1511 - 56dp/2).
+    /// </summary>
+    public async Task<int> GetImeTopAsync(
+        string serial,
+        CancellationToken cancellationToken = default)
+    {
+        var windows = await RunShellAsync(serial, "dumpsys window windows", cancellationToken)
+            .ConfigureAwait(false);
+
+        var block = Regex.Match(
+            windows,
+            @"Window\{[0-9a-f]+ u0 InputMethod\}:([\s\S]{0,2000})");
+        if (!block.Success)
+        {
+            return 0;
+        }
+
+        var body = block.Groups[1].Value;
+
+        // mViewVisibility 0x8 (GONE) still leaves the last touchable region in
+        // place, so visibility has to be checked before trusting the geometry.
+        var vis = Regex.Match(body, @"mViewVisibility=0x([0-9a-fA-F]+)");
+        if (!vis.Success ||
+            !int.TryParse(vis.Groups[1].Value, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var visibility) ||
+            visibility != 0)
+        {
+            return 0;
+        }
+
+        // Note the space: this block prints "touchable region=SkRegion(...)",
+        // while the visible-window list prints "touchableRegion=...".
+        var region = Regex.Match(
+            body,
+            @"touchable region=SkRegion\(\((-?\d+),\s*(-?\d+),\s*(-?\d+),\s*(-?\d+)\)\)");
+        if (!region.Success ||
+            !int.TryParse(region.Groups[2].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var top) ||
+            top <= 0 ||
+            top >= 6000)
+        {
+            return 0;
+        }
+
+        return top;
     }
 
     public async Task<bool> IsTextInputFocusedAsync(

@@ -15,6 +15,7 @@ public partial class InputSinkWindow : Window
     private readonly DispatcherTimer _imePollTimer;
     private readonly bool _autoSubmitEnabled;
     private readonly int _autoSubmitDebounceMilliseconds;
+    private readonly bool _enterSendsMessage;
     private bool _cancelled;
     private bool _isSubmitting;
     private bool _waitingForImeEnterCommit;
@@ -25,9 +26,11 @@ public partial class InputSinkWindow : Window
 
     public InputSinkWindow(
         bool autoSubmitEnabled = true,
-        int autoSubmitDebounceMilliseconds = 100)
+        int autoSubmitDebounceMilliseconds = 100,
+        bool enterSendsMessage = true)
     {
         _autoSubmitEnabled = autoSubmitEnabled;
+        _enterSendsMessage = enterSendsMessage;
         _autoSubmitDebounceMilliseconds = Math.Clamp(
             autoSubmitDebounceMilliseconds,
             50,
@@ -87,7 +90,8 @@ public partial class InputSinkWindow : Window
     }
 
     public event EventHandler<string>? TextSubmitted;
-    public event EventHandler? EnterKeyRequested;
+    public event EventHandler? SendMessageRequested;
+    public event EventHandler? NewlineRequested;
     public event EventHandler? Cancelled;
 
     public void ShowAtScreenPoint(int screenX, int screenY, IntPtr scrcpyWindow)
@@ -136,7 +140,15 @@ public partial class InputSinkWindow : Window
         _autoSubmitTimer.Stop();
         _imePollTimer.Stop();
         Cancelled?.Invoke(this, EventArgs.Empty);
-        Close();
+
+        try
+        {
+            Close();
+        }
+        catch
+        {
+            // Already closed, or closed from a shutdown path.
+        }
     }
 
     public bool IsSubmissionInProgress => _isSubmitting;
@@ -180,6 +192,15 @@ public partial class InputSinkWindow : Window
 
     private void InputBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        // Held keys auto-repeat every ~30 ms. Without this guard a long press
+        // on Enter queued dozens of taps that kept firing after the key was
+        // released.
+        if (e.IsRepeat && e.Key is Key.Enter or Key.Back or Key.Delete)
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key == Key.Escape)
         {
             e.Handled = true;
@@ -308,9 +329,18 @@ public partial class InputSinkWindow : Window
             e.Handled = true;
             if (string.IsNullOrWhiteSpace(InputBox.Text))
             {
-                // Nothing pending locally: let the device decide what Enter
-                // means (send / search / newline), exactly as a real keyboard.
-                EnterKeyRequested?.Invoke(this, EventArgs.Empty);
+                // Empty host: Enter and Ctrl+Enter map to send / newline, and
+                // the setting decides which one is which.
+                var withCtrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+                if (_enterSendsMessage != withCtrl)
+                {
+                    SendMessageRequested?.Invoke(this, EventArgs.Empty);
+                }
+                else
+                {
+                    NewlineRequested?.Invoke(this, EventArgs.Empty);
+                }
+
                 return;
             }
 
