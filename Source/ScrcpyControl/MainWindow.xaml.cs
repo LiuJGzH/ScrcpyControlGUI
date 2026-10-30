@@ -1065,28 +1065,14 @@ public partial class MainWindow : Window
 
     private void InputMonitor_RightShortPressRequested(object? sender, EventArgs e)
     {
-        Dispatcher.BeginInvoke(new Action(() => _ = SendBackOrWakeAsync()));
+        Dispatcher.BeginInvoke(new Action(() => _ = SendBackAsync()));
     }
 
-    private async Task SendBackOrWakeAsync()
+    private async Task SendBackAsync()
     {
         try
         {
             var shortcutModifier = GetOptionValue("--shortcut-mod") ?? "lalt,lsuper";
-            if (_screenOff)
-            {
-                // Mirrors scrcpy's own right-click behaviour: wake the device
-                // instead of sending BACK while the screen is off.
-                await _scrcpy.SendScreenShortcutAsync(
-                    turnScreenOn: true,
-                    shortcutModifier,
-                    _appCancellation.Token);
-                ApplyDeviceScreenState(screenOff: false);
-                AppendLog("右键短按：手机屏幕已点亮");
-                BottomStatusText.Text = "手机屏幕已点亮";
-                return;
-            }
-
             await _scrcpy.SendBackShortcutAsync(shortcutModifier, _appCancellation.Token);
             AppendLog("右键短按：已发送返回");
             BottomStatusText.Text = "已发送返回";

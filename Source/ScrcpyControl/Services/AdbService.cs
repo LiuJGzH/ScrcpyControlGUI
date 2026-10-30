@@ -168,9 +168,15 @@ public sealed class AdbService
         }
 
         var dp = metrics.Density / 160d;
-        var barHeight = (int)Math.Round(56 * dp);
-        var y = imeTop - barHeight / 2;
-        var x = metrics.Width - (int)Math.Round(25 * dp);
+
+        // Tap the IME's own action key at the bottom-right of the keyboard
+        // instead of the app's send button. The app button moves whenever the
+        // input bar grows (quoted message, @ hint, multi-line), and its two
+        // layouts have no overlapping hit area; the keyboard key is bound to the
+        // IME layout only. Calibrated by touch capture on 1116x2480:
+        // keyboard send key = (1017, 2228).
+        var x = metrics.Width - (int)Math.Round(33 * dp);
+        var y = metrics.Height - (int)Math.Round(84 * dp);
 
         await RunShellAsync(serial, $"input tap {x} {y}", cancellationToken)
             .ConfigureAwait(false);
